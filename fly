@@ -1,0 +1,657 @@
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# settings                                                              settings
+# ------------------------------------------------------------------------------
+set -o errtrace  # any trap on ERR is inherited by shell functions,
+                 #   command substitutions, and commands executed in a subshell
+                 #   environment
+set -o nounset   # treat unset variables and parameters other than the special
+                 #   parameters "@" and "*" as an error when performing
+                 #   parameter expansion
+set -o pipefail  # the return value of a pipeline is the value of the last
+                 #   (rightmost) command to exit with a non-zero status, or
+                 #   zero if all commands in the pipeline exit successfully
+
+# set language
+export LANG="en_US.UTF-8"
+
+# use dot as decimal separator
+export LC_NUMERIC="en_US.UTF-8"
+
+# terminal colors
+readonly    NONE=$(tput sgr0)
+readonly     RED=$(tput setaf 1)
+readonly   GREEN=$(tput setaf 2)
+readonly  YELLOW=$(tput setaf 3)
+readonly    BLUE=$(tput setaf 4)
+readonly MAGENTA=$(tput setaf 5)
+readonly    CYAN=$(tput setaf 6)
+readonly   WHITE=$(tput setaf 7)
+
+# slow down actions
+readonly SLEEPDEFAULT="0.25"
+
+# screen coordinates
+readonly AVATAR_X=66
+readonly AVATAR_Y=197
+readonly HIDE_X=50
+readonly HIDE_Y=760
+readonly AREA_TOP=143
+readonly AREA_LEFT=443
+readonly AREA_WIDTH=1030
+readonly AREA_HEIGHT=620
+
+# map specific settings (home island)
+HOME_OFFSET_X=264
+HOME_OFFSET_Y=220
+AREA_XSHIFT=1005
+AREA_YSHIFT=530
+MAP_ROWS=6
+MAP_COLUMNS=5
+MAP_ZOOM=5
+
+# reset the offset of the current view (image coordinates)
+VIEW_OFFSET_X=0
+VIEW_OFFSET_Y=0
+
+# ------------------------------------------------------------------------------
+# functions                                                            functions
+# ------------------------------------------------------------------------------
+
+# -------
+# failmsg
+# -------
+#
+# This function prints a red colored message via stderr.
+#
+function failmsg()
+{
+  # push to stderr
+  echo -e "${RED}[FAIL]${NONE} $1" 1>&2
+}
+
+# -------
+# warnmsg
+# -------
+#
+# This function prints a yellow colored message via stderr.
+#
+function warnmsg()
+{
+  # push to stderr
+  echo -e "${YELLOW}[WARN]${NONE} $1" 1>&2
+}
+
+# -------
+# infomsg
+# -------
+#
+# This function prints a blue colored message via stderr.
+#
+function infomsg()
+{
+  # push to stderr
+  echo -e "${BLUE}[INFO]${NONE} $1" 1>&2
+}
+
+# -------
+# donemsg
+# -------
+#
+# This function prints a green colored message via stderr.
+#
+function donemsg()
+{
+  # push to stderr
+  echo -e "${GREEN}[DONE]${NONE} $1" 1>&2
+}
+
+# ----------
+# get_win_id
+# ----------
+#
+#
+#
+function get_win_id()
+{
+  xwininfo -root           \
+           -tree           \
+  | grep --extended-regexp \
+         --max-count='1'   \
+         --regexp='\("Navigator" "Firefox"\)' \
+  | sed -rne 's/[[:space:]]*(0x[[:digit:]AaBbCcDdEeFf]+).+/\1/p'
+}
+
+# ---------------
+# move_horizontal
+# ---------------
+#
+# $1  offset
+#
+function move_horizontal()
+{
+  # get distance and direction of the mouse pointer
+  local DST=$(bc <<< "define dst(i) { if (i < 0) return (-i) ; return (i) } ; dst($1)")
+  local DIR=$(bc <<< "define dir(i) { if (i < 0) return (1) ; return (-1) } ; dir($1)")
+
+  # initial position of the mouse pointer
+  local XP=0
+  local YP=0
+
+  # move mouse pointer forward (right)
+  if (( DIR > 0 )) ; then
+
+    XP=$AREA_LEFT
+    YP=$AREA_TOP
+
+  # move mouse pointer backward (left)
+  else
+
+    XP=$(bc <<< "$AREA_LEFT + $AREA_WIDTH")
+    YP=$AREA_TOP
+
+  fi
+
+  # split total distance
+  while (( DST > 0 ))
+  do
+
+    # get distance to shift
+    local MIN=$(bc <<< "define min(a, b) { if (a < b) return a ; return b } ; min($DST, $AREA_WIDTH)")
+    local MOV=$(bc <<< "$DIR * $MIN")
+
+    # update global offset (subtended mouse movement)
+    VIEW_OFFSET_X=$(bc <<< "$VIEW_OFFSET_X - $MOV")
+
+    # drag map
+    xdotool                               \
+      mousemove --sync "$XP" "$YP"        \
+      sleep "$SLEEPDEFAULT"               \
+      mousedown 1                         \
+      sleep "$SLEEPDEFAULT"               \
+      mousemove_relative --sync -- $MOV 0 \
+      sleep "$SLEEPDEFAULT"               \
+      mouseup 1                           \
+      sleep "$SLEEPDEFAULT"
+
+    # update distance
+    DST=$(bc <<< "$DST - $MIN")
+
+  done
+}
+
+# -------------
+# move_vertical
+# -------------
+#
+# $1  offset
+#
+function move_vertical()
+{
+  # get distance and direction of the mouse pointer
+  local DST=$(bc <<< "define dst(i) { if (i < 0) return (-i) ; return (i) } ; dst($1)")
+  local DIR=$(bc <<< "define dir(i) { if (i < 0) return (1) ; return (-1) } ; dir($1)")
+
+  # initial position of the mouse pointer
+  local XP=0
+  local YP=0
+
+  # move mouse pointer forward (down)
+  if (( DIR > 0 )) ; then
+
+    XP=$AREA_LEFT
+    YP=$AREA_TOP
+
+  # move mouse pointer backward (up)
+  else
+
+    XP=$AREA_LEFT
+    YP=$(bc <<< "$AREA_TOP + $AREA_HEIGHT")
+
+  fi
+
+  # split total distance
+  while (( DST > 0 ))
+  do
+
+    # get distance to shift
+    local MIN=$(bc <<< "define min(a, b) { if (a < b) return a ; return b } ; min($DST, $AREA_HEIGHT)")
+    local MOV=$(bc <<< "$DIR * $MIN")
+
+    # update global offset (subtended mouse movement)
+    VIEW_OFFSET_Y=$(bc <<< "$VIEW_OFFSET_Y - $MOV")
+
+    # drag map
+    xdotool                            \
+      mousemove --sync "$XP" "$YP"     \
+      sleep "$SLEEPDEFAULT"            \
+      mousedown 1                      \
+      sleep "$SLEEPDEFAULT"            \
+      mousemove_relative --sync 0 $MOV \
+      sleep "$SLEEPDEFAULT"            \
+      mouseup 1                        \
+      sleep "$SLEEPDEFAULT"
+
+    # update distance
+    DST=$(bc <<< "$DST - $MIN")
+
+  done
+}
+
+# -------
+# zoom_in
+# -------
+#
+# $1  steps
+#
+function zoom_in()
+{
+  # init sequence of keys
+  local ZCMD="plus"
+
+  for (( STEP = 1 ; STEP < $1 ; STEP += 1 ))
+  do
+
+    ZCMD="$ZCMD plus"
+
+  done
+
+  # zoom in
+  xdotool key --delay 100 $ZCMD sleep "$SLEEPDEFAULT"
+}
+
+# --------
+# zoom_out
+# --------
+#
+# $1  steps
+#
+function zoom_out()
+{
+  # init sequence of keys
+  local ZCMD="minus"
+
+  for (( STEP = 1 ; STEP < $1 ; STEP += 1 ))
+  do
+
+    ZCMD="$ZCMD minus"
+
+  done
+
+  # zoom out
+  xdotool key --delay 100 $ZCMD sleep "$SLEEPDEFAULT"
+}
+
+# ----
+# init
+# ----
+#
+#
+#
+function init()
+{
+  # get firefox window ID
+  local WINID=$(get_win_id)
+
+  # unable to get window ID
+  [ -z "$WINID" ] && exit 1
+
+  # activate and focus firefox window
+  xdotool search --classname "Navigator" windowactivate
+  xdotool search --classname "Navigator" windowfocus
+
+  # click avatar and move to top left
+  xdotool                                     \
+    mousemove --sync "$AVATAR_X" "$AVATAR_Y"  \
+    sleep "$SLEEPDEFAULT"                     \
+    click 1                                   \
+    sleep "$SLEEPDEFAULT"                     \
+    mousemove --sync "$AREA_LEFT" "$AREA_TOP" \
+    sleep "$SLEEPDEFAULT"
+}
+
+# ----
+# home
+# ----
+#
+#
+#
+function home()
+{
+  # zoom out
+  zoom_out 10
+
+  # drag map to top left
+  move_horizontal $(bc <<< "-3 * $AREA_WIDTH")
+  move_vertical   $(bc <<< "-3 * $AREA_HEIGHT")
+
+  # zoom in
+  zoom_in "$MAP_ZOOM"
+
+  # drag map to home position
+  move_horizontal "$HOME_OFFSET_X"
+  move_vertical   "$HOME_OFFSET_Y"
+
+  # reset global offset
+  VIEW_OFFSET_X=0
+  VIEW_OFFSET_Y=0
+
+  # move mouse pointer to area's top left corner
+  xdotool                                     \
+    mousemove --sync "$AREA_LEFT" "$AREA_TOP" \
+    sleep 2
+}
+
+# ----
+# hide
+# ----
+#
+#
+#
+function hide()
+{
+  # hide mouse pointer and wait one second
+  xdotool                                \
+    mousemove --sync "$HIDE_X" "$HIDE_Y" \
+    sleep 1
+}
+
+# --------------
+# begin_movement
+# --------------
+#
+#
+#
+function begin_movement()
+{
+  # calculate resulting size
+  local WTOTAL=$(bc <<< "$AREA_WIDTH + ($MAP_COLUMNS - 1) * $AREA_XSHIFT")
+  local HTOTAL=$(bc <<< "$AREA_HEIGHT + ($MAP_ROWS - 1) * $AREA_YSHIFT")
+
+  # start composite command
+  {
+    printf "#!/bin/bash\n"
+    printf "\n"
+    printf "convert -size \"%dx%d\" \\\\\n" "$WTOTAL" "$HTOTAL"
+    printf "        canvas:black \\\\\n"
+  } > "composite"
+}
+
+# ------------
+# end_movement
+# ------------
+#
+#
+#
+function end_movement()
+{
+  # get current date and time
+  local TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
+
+  # finish composite command
+  {
+    printf "        \"PNG32:map-%s.png\"\n" "$TIMESTAMP"
+    printf "\n"
+    printf "# remove temporary files\n"
+    printf "rm -f scr-*.png\n"
+    printf "\n"
+    printf "# remove this file\n"
+    printf "rm composite\n"
+    printf "\n"
+    printf "# signalize success\n"
+    printf "exit 0\n"
+  } >> "composite"
+
+  # set executable
+  chmod u+x "composite"
+
+  # notify user
+  echo
+  echo "call ./composite to merge the single screenshots"
+  echo
+}
+
+# ------------
+# operate_area
+# ------------
+#
+# $1  area counter (starts with 1)
+#
+function operate_area()
+{
+  # hide mouse pointer
+  hide
+
+  # set name of the resulting file
+  local OUTFILE=$(printf "scr-%02d.png" "$1")
+
+  # get screenshot of the entire screen
+  import -window     "root"                                                  \
+         -colorspace "sRGB"                                                  \
+         -depth      "8"                                                     \
+         -type       "TrueColorMatte"                                        \
+         -define     "png:bit-depth=8"                                       \
+         -define     "png:color-type=6"                                      \
+         -define     "png:format=png32"                                      \
+         -quality    "100"                                                   \
+         -crop       "${AREA_WIDTH}x${AREA_HEIGHT}+${AREA_LEFT}+${AREA_TOP}" \
+         +repage                                                             \
+         "PNG32:$OUTFILE"                                                    \
+         &>"/dev/null"
+
+  # continue composite command
+  {
+    printf "        \"%s\" -geometry \"+%d+%d\" -composite \\\\\n" \
+           "$OUTFILE"                                              \
+           "$VIEW_OFFSET_X"                                        \
+           "$VIEW_OFFSET_Y"
+  } >> "composite"
+}
+
+# ----
+# move
+# ----
+#
+#
+#
+function move()
+{
+  # initialize counter
+  local AREA_COUNTER=0
+
+  # set x offset
+  local XMOV="$AREA_XSHIFT"
+
+  # call handler
+  begin_movement
+
+  # shift area vertically
+  for (( RNUM = 0 ; RNUM < MAP_ROWS ; RNUM += 1 ))
+  do
+
+    # shift area horizontally
+    for (( CNUM = 0 ; CNUM < MAP_COLUMNS ; CNUM += 1 ))
+    do
+
+      # step counter
+      (( AREA_COUNTER += 1 ))
+
+      # call handler
+      operate_area "$AREA_COUNTER"
+
+      # at least one more column
+      if (( (CNUM + 1) < MAP_COLUMNS )) ; then
+
+        # shift map
+        move_horizontal "$XMOV"
+
+      fi
+
+    done
+
+    # at least one more row
+    if (( (RNUM + 1) < MAP_ROWS )) ; then
+    
+      # shift map
+      move_vertical "$AREA_YSHIFT"
+
+      # change direction
+      XMOV=$(bc <<< "-1 * $XMOV")
+
+    fi
+
+  done
+
+  # call handler
+  end_movement
+}
+
+# ------------------------------------------------------------------------------
+# options                                                                options
+# ------------------------------------------------------------------------------
+
+# start in DEFAULT mode
+OPMODE="DEFAULT"
+
+# set options to accept
+readonly KNOWN_OPTIONS=":hvsc:r:X:x:Y:y:z:"
+
+# check passed options
+while getopts "$KNOWN_OPTIONS" OPTION "$@"
+do
+
+  case "$OPTION" in
+
+    # show help
+    "h") OPMODE="SHOW_HELP"
+         break
+         ;;
+
+    # show version
+    "v") OPMODE="SHOW_VERSION"
+         break
+         ;;
+
+    # show settings
+    "s") OPMODE="SHOW_SETTINGS"
+         ;;
+
+    # set number of columns
+    "c") MAP_COLUMNS="$OPTARG"
+         ;;
+
+    # set number of rows
+    "r") MAP_ROWS="$OPTARG"
+         ;;
+
+    # set initial x-offset
+    "X") HOME_OFFSET_X="$OPTARG"
+         ;;
+
+    # set x shift
+    "x") AREA_XSHIFT="$OPTARG"
+         ;;
+
+    # set initial y-offset
+    "Y") HOME_OFFSET_Y="$OPTARG"
+         ;;
+
+    # set y shift
+    "y") AREA_YSHIFT="$OPTARG"
+         ;;
+
+    # set zoom
+    "z") MAP_ZOOM="$OPTARG"
+         ;;
+
+    "?") failmsg "unknown option: -$OPTARG"
+         exit 1
+         ;;
+
+    ":") failmsg "missing argument: -$OPTARG <argument>"
+         exit 1
+         ;;
+
+  esac
+
+done
+
+# get number of positional parameters
+PPNUM=$(( $# - OPTIND + 1 ))
+
+# drop all parsed options
+shift $(( OPTIND - 1 ))
+
+# ------------------------------------------------------------------------------
+# commands                                                              commands
+# ------------------------------------------------------------------------------
+
+# show help
+if [ "$OPMODE" == "SHOW_HELP" ] ; then
+
+  echo
+  echo "fly [options]"
+  echo
+  echo "Options:"
+  echo "  -h        show help and exit"
+  echo "  -v        show version and exit"
+  echo "  -s        show settings and exit"
+  echo "  -r <num>  set number of rows"
+  echo "  -c <num>  set number of columns"
+  echo "  -X <num>  set initial x-offset"
+  echo "  -Y <num>  set initial y-offset"
+  echo "  -x <num>  set number of pixels to shift in x-direction (max. $AREA_WIDTH)"
+  echo "  -y <num>  set number of pixels to shift in y-direction (max. $AREA_HEIGHT)"
+  echo "  -z <num>  set zoom level"
+  echo
+
+  # signalize success
+  exit 0
+
+fi
+
+# show version
+if [ "$OPMODE" == "SHOW_VERSION" ] ; then
+
+  # print current verion
+  echo "2018-05-15"
+
+  # signalize success
+  exit 0
+
+fi
+
+# show settings
+echo "area width   = $AREA_WIDTH"
+echo "area height  = $AREA_HEIGHT"
+echo "x-offset     = $HOME_OFFSET_X"
+echo "y-offset     = $HOME_OFFSET_Y"
+echo "x-shift      = $AREA_XSHIFT"
+echo "y-shift      = $AREA_YSHIFT"
+echo "rows         = $MAP_ROWS"
+echo "columns      = $MAP_COLUMNS"
+echo "zoom         = $MAP_ZOOM"
+echo "total width  = $(bc <<< "$AREA_WIDTH + ($MAP_COLUMNS - 1) * $AREA_XSHIFT")"
+echo "total height = $(bc <<< "$AREA_HEIGHT + ($MAP_ROWS - 1) * $AREA_YSHIFT")"
+
+# show settings only
+if [ "$OPMODE" == "SHOW_SETTINGS" ] ; then
+
+  # signalize success
+  exit 0
+
+fi
+
+# activate firefox window
+init
+
+# move to home position
+home
+
+# start flight
+move
+
+# signalize success
+exit 0
+
