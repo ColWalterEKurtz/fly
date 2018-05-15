@@ -295,7 +295,15 @@ function init()
   local WINID=$(get_win_id)
 
   # unable to get window ID
-  [ -z "$WINID" ] && exit 1
+  if [ -z "$WINID" ] ; then
+
+    # notify user
+    failmsg "unable to find firefox window"
+
+    # signalize trouble
+    exit 1
+
+  fi
 
   # activate and focus firefox window
   xdotool search --classname "Navigator" windowactivate
